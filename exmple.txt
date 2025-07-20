@@ -1,0 +1,362 @@
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+import cv2
+import numpy as np
+import base64
+import json
+import asyncio
+from typing import List
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="Exam Monitoring System", version="1.0.0")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify your frontend URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Store active connections
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        logger.info(f"Client connected. Total connections: {len(self.active_connections)}")
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+        logger.info(f"Client disconnected. Total connections: {len(self.active_connections)}")
+
+    async def send_personal_message(self, message: str, websocket: WebSocket):
+        await websocket.send_text(message)
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            await connection.send_text(message)
+
+manager = ConnectionManager()
+
+# Face detection and pose estimation setup
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+
+def detect_mobile_phone(gray):
+    """
+    Simple mobile phone detection using edge detection and rectangular shapes
+    """
+    # Apply Gaussian blur
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    
+    # Edge detection
+    edges = cv2.Canny(blurred, 50, 150)
+    
+    # Find contours
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    mobile_detected = False
+    for contour in contours:
+        # Calculate contour area
+        area = cv2.contourArea(contour)
+        
+        # Filter by area (mobile phone size range)
+        if 1000 < area < 15000:
+            # Approximate contour to polygon
+            epsilon = 0.02 * cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+            
+            # Check if it's roughly rectangular (4 corners) and has right aspect ratio
+            if len(approx) >= 4:
+                x, y, w, h = cv2.boundingRect(contour)
+                aspect_ratio = float(w) / h
+                
+                # Mobile phone aspect ratio is typically between 0.4 to 0.7 (portrait)
+                # or 1.4 to 2.5 (landscape)
+                if (0.3 < aspect_ratio < 0.8) or (1.2 < aspect_ratio < 3.0):
+                    mobile_detected = True
+                    break
+    
+    return mobile_detected
+
+def detect_paper_document(gray):
+    """
+    Detect white papers or documents in the frame
+    """
+    # Threshold to find bright/white areas
+    _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+    
+    # Morphological operations to clean up
+    kernel = np.ones((5, 5), np.uint8)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+    
+    # Find contours of white areas
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    paper_detected = False
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        
+        # Paper should be reasonably large
+        if area > 5000:
+            # Check if it's roughly rectangular
+            epsilon = 0.02 * cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+            
+            if len(approx) >= 4:
+                x, y, w, h = cv2.boundingRect(contour)
+                aspect_ratio = float(w) / h
+                
+                # Paper aspect ratios (A4 is ~1.4, letter is ~1.3)
+                if 0.7 < aspect_ratio < 2.0 and area > 8000:
+                    paper_detected = True
+                    break
+    
+    return paper_detected
+
+def analyze_head_pose_simple(gray, face_rect):
+    """
+    Simplified head pose analysis for exam monitoring - 30 degree threshold
+    """
+    x, y, w, h = face_rect
+    
+    # Calculate face center
+    face_center_x = x + w // 2
+    face_center_y = y + h // 2
+    
+    # Get image center
+    img_center_x = gray.shape[1] // 2
+    img_center_y = gray.shape[0] // 2
+    
+    # Calculate relative position
+    horizontal_offset = (face_center_x - img_center_x) / (gray.shape[1] // 2)
+    vertical_offset = (face_center_y - img_center_y) / (gray.shape[0] // 2)
+    
+    # Convert to angles (calibrated for 30-degree detection)
+    yaw_angle = horizontal_offset * 35  # Left/Right turning
+    pitch_angle = vertical_offset * 30  # Up/Down looking
+    
+    # Enhance detection with face aspect ratio
+    aspect_ratio = w / h
+    if aspect_ratio < 0.75:  # Face turned to side
+        yaw_angle = abs(yaw_angle) + 25
+    
+    # Eye detection for better accuracy
+    roi_gray = gray[y:y+h, x:x+w]
+    eyes = eye_cascade.detectMultiScale(roi_gray, 1.1, 5)
+    
+    roll_angle = 0
+    if len(eyes) == 2:
+        # Calculate eye alignment for roll detection
+        eye1, eye2 = eyes[0], eyes[1]
+        eye1_center = eye1[0] + eye1[2]//2, eye1[1] + eye1[3]//2
+        eye2_center = eye2[0] + eye2[2]//2, eye2[1] + eye2[3]//2
+        
+        roll_angle = np.degrees(np.arctan2(
+            eye2_center[1] - eye1_center[1],
+            eye2_center[0] - eye1_center[0]
+        ))
+        
+        # Reduce yaw for frontal pose
+        if abs(roll_angle) < 10:
+            yaw_angle *= 0.6
+    elif len(eyes) == 1:
+        # Only one eye - side profile
+        yaw_angle = abs(yaw_angle) + 30
+    else:
+        # No eyes - likely looking away
+        yaw_angle = abs(yaw_angle) + 35
+    
+    return pitch_angle, yaw_angle, roll_angle
+
+def detect_faces(image_data):
+    """
+    Comprehensive exam monitoring with all validations
+    """
+    try:
+        # Decode base64 image
+        img_data = base64.b64decode(image_data.split(',')[1])
+        nparr = np.frombuffer(img_data, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            return {"error": "Could not decode image"}
+        
+        # Convert to grayscale
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        # Detect faces
+        faces = face_cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(50, 50),
+            flags=cv2.CASCADE_SCALE_IMAGE
+        )
+        
+        num_faces = len(faces)
+        violations = []
+        
+        # EXAM VALIDATION 1: Multiple faces check
+        if num_faces > 1:
+            violations.append(f"🚫 MULTIPLE PEOPLE DETECTED ({num_faces} faces) - Only student allowed!")
+        
+        # EXAM VALIDATION 2: Head pose check (30-degree rule)
+        if num_faces > 0:
+            for face_rect in faces:
+                pitch, yaw, roll = analyze_head_pose_simple(gray, face_rect)
+                
+                # 30-degree threshold for exam monitoring
+                MAX_ANGLE = 30
+                
+                if abs(yaw) > MAX_ANGLE:
+                    direction = "RIGHT" if yaw > 0 else "LEFT"
+                    violations.append(f"� LOOKING {direction} - Keep eyes on screen! ({abs(yaw):.0f}°)")
+                
+                if pitch > MAX_ANGLE:
+                    violations.append(f"⬇️ LOOKING DOWN - Look at screen! ({pitch:.0f}°)")
+                elif pitch < -MAX_ANGLE:
+                    violations.append(f"⬆️ LOOKING UP - Focus on exam! ({abs(pitch):.0f}°)")
+        
+        # EXAM VALIDATION 3: Mobile phone detection
+        mobile_detected = detect_mobile_phone(gray)
+        if mobile_detected:
+            violations.append("📱 MOBILE PHONE DETECTED - Remove device immediately!")
+        
+        # EXAM VALIDATION 4: Paper/document detection
+        paper_detected = detect_paper_document(gray)
+        if paper_detected:
+            violations.append("📄 PAPER/DOCUMENT DETECTED - No external materials allowed!")
+        
+        # Determine final status
+        if num_faces == 0:
+            status = "WARNING"
+            message = "❌ NO STUDENT DETECTED - Position yourself in frame!"
+            alert_level = "high"
+        elif violations:
+            status = "WARNING"
+            message = f"⚠️ EXAM VIOLATIONS DETECTED ({len(violations)})"
+            alert_level = "high" if any("MULTIPLE PEOPLE" in v or "MOBILE" in v for v in violations) else "medium"
+        else:
+            status = "NORMAL"
+            message = "✅ EXAM CONDITIONS NORMAL - Continue"
+            alert_level = "none"
+        
+        return {
+            "status": status,
+            "message": message,
+            "faces_detected": num_faces,
+            "alert_level": alert_level,
+            "violations": violations,
+            "detection_details": {
+                "mobile_detected": mobile_detected,
+                "paper_detected": paper_detected,
+                "pose_angles": {
+                    "yaw": yaw if num_faces > 0 else 0,
+                    "pitch": pitch if num_faces > 0 else 0,
+                    "roll": roll if num_faces > 0 else 0
+                }
+            },
+            "timestamp": asyncio.get_event_loop().time()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in exam monitoring: {str(e)}")
+        return {
+            "status": "ERROR",
+            "message": f"SYSTEM ERROR - Please check camera connection",
+            "faces_detected": 0,
+            "alert_level": "high",
+            "violations": ["System malfunction - contact administrator"],
+            "detection_details": {
+                "mobile_detected": False,
+                "paper_detected": False,
+                "pose_angles": {"yaw": 0, "pitch": 0, "roll": 0}
+            },
+            "timestamp": asyncio.get_event_loop().time()
+        }
+
+@app.get("/")
+async def read_root():
+    return {"message": "Exam Monitoring System API", "status": "running"}
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "service": "exam-monitoring"}
+
+@app.websocket("/ws/monitor")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Receive image data from client
+            data = await websocket.receive_text()
+            
+            try:
+                # Parse JSON data
+                message = json.loads(data)
+                
+                if message.get("type") == "video_frame":
+                    # Process the video frame
+                    image_data = message.get("data")
+                    
+                    if image_data:
+                        # Analyze the frame
+                        analysis_result = detect_faces(image_data)
+                        
+                        # Send analysis result back to client
+                        response = {
+                            "type": "analysis_result",
+                            "data": analysis_result
+                        }
+                        
+                        await manager.send_personal_message(
+                            json.dumps(response), 
+                            websocket
+                        )
+                        
+                        # Log warnings
+                        if analysis_result["status"] == "WARNING":
+                            logger.warning(f"Alert: {analysis_result['message']}")
+                
+                elif message.get("type") == "ping":
+                    # Respond to ping with pong
+                    pong_response = {
+                        "type": "pong",
+                        "timestamp": asyncio.get_event_loop().time()
+                    }
+                    await manager.send_personal_message(
+                        json.dumps(pong_response), 
+                        websocket
+                    )
+                    
+            except json.JSONDecodeError:
+                error_response = {
+                    "type": "error",
+                    "message": "Invalid JSON format"
+                }
+                await manager.send_personal_message(
+                    json.dumps(error_response), 
+                    websocket
+                )
+                
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+        logger.info("Client disconnected from monitoring")
+    except Exception as e:
+        logger.error(f"WebSocket error: {str(e)}")
+        manager.disconnect(websocket)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -1,0 +1,189 @@
+# ===========================================
+# FastAPI + OpenCV Project .gitignore
+# ===========================================
+
+# Environment Variables & Secrets
+.env
+.env.local
+.env.development
+.env.production
+.env.staging
+*.env
+config.json
+secrets.json
+.secrets/
+credentials.json
+auth_config.py
+api_keys.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+.virtualenv/
+pyvenv.cfg
+
+# FastAPI Specific
+.cache/
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# OpenCV & Computer Vision
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+*.tif
+*.webp
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.wmv
+*.flv
+*.webm
+temp_images/
+captured_frames/
+video_cache/
+model_weights/
+*.h5
+*.pb
+*.onnx
+*.tflite
+*.pth
+*.pt
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+database/
+db_backups/
+
+# Logs & Monitoring
+logs/
+*.log
+*.log.*
+monitoring/
+crash_dumps/
+error_reports/
+
+# Temporary Files
+tmp/
+temp/
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# IDE & Editor
+.vscode/
+.idea/
+*.sublime-*
+*.atom/
+.spyderproject
+.spyproject
+.ropeproject
+
+# OS Generated
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Documentation Build
+docs/_build/
+site/
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# Testing
+.tox/
+.nox/
+.coverage
+htmlcov/
+.pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Certificates & SSL
+*.pem
+*.key
+*.crt
+*.cert
+*.p12
+*.pfx
+ssl/
+certificates/
+
+# Backup Files
+*.bak
+*.backup
+*.old
+*_backup
+*_old
+
+# Package Managers
+.npm/
+node_modules/
+package-lock.json
+yarn.lock
+
+# Production
+production/
+prod/
+*.prod
+
+# Custom Application Data
+user_data/
+uploaded_files/
+session_data/
+cache/
